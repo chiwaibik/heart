@@ -1,0 +1,335 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Для Ксюши</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Montserrat:wght@500;700&family=Marck+Script&display=swap">
+<style>
+  :root { --bg: #0b0306; --ink: #fff4f7; color-scheme: dark; }
+  html, body { height: 100%; margin: 0; background: var(--bg); color: var(--ink); overflow: hidden; }
+  canvas { display: block; width: 100%; height: 100%; }
+  button {
+    position: fixed; right: 16px; bottom: calc(16px + env(safe-area-inset-bottom, 0px));
+    font: 500 13px "Montserrat", "Segoe UI", Arial, sans-serif; color: var(--ink);
+    background: rgba(255,110,150,.12); border: 1px solid rgba(255,110,150,.35);
+    border-radius: 999px; padding: 8px 14px; cursor: pointer;
+  }
+  button:hover { background: rgba(255,110,150,.25); }
+  button:focus-visible { outline: 2px solid #ff7aa2; outline-offset: 2px; }
+</style>
+</head>
+<body>
+<canvas id="c" aria-label="Сердце из слов I love you. В центре: Ксюша, я люблю тебя"></canvas>
+<button id="again" type="button">Сначала</button>
+ 
+<script>
+(() => {
+  "use strict";
+  
+  const CAPTION = ["Ксюша,", "я люблю тебя<3"];
+  const PHRASES = ["I love you", "love you", "Love you", "LOVE YOU", "I LOVE YOU"];
+  const BG = "#0b0306";
+ 
+  const TONES = ["255,60,95", "255,92,135", "255,135,175", "255,200,215"];
+  const TONE_W = [3, 4, 3, 1];
+  const BUILD_TIME = 420;
+  const ZOOM_START = 440, ZOOM_END = 620;
+  const ZOOM_MAX = 1.12;
+  const EXPLODE = 640;
+  const CAPTION_START = EXPLODE + 90, CAPTION_END = EXPLODE + 200;
+  const FADE = 170;
+  const OUTLINE_START = EXPLODE + 210, OUTLINE_END = EXPLODE + 360;   // когда рисуется сердце-обводка вокруг надписи
+  const GHOST = "255,70,110";
+  const GLOW = 0.6;
+  const VS = 1000;
+  const ROW_H = 20;
+  const SANS = '"Montserrat", "Segoe UI", Arial, sans-serif';
+  const SERIF = '"Marck Script", "Segoe Script", "Lucida Handwriting", "Ink Free", cursive';
+ 
+  const cv = document.getElementById("c"), ctx = cv.getContext("2d");
+  const lay = document.createElement("canvas"), lctx = lay.getContext("2d");
+  const cap = document.createElement("canvas"), cctx = cap.getContext("2d");
+  const gl = document.createElement("canvas"), gctx = gl.getContext("2d");
+  const s1 = document.createElement("canvas"), s1c = s1.getContext("2d");
+  const s2 = document.createElement("canvas"), s2c = s2.getContext("2d");
+  const reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
+ 
+  const rnd = (a, b) => a + Math.random() * (b - a);
+  const pick = (arr, w) => {
+    let r = Math.random() * w.reduce((x, y) => x + y, 0);
+    for (let i = 0; i < arr.length; i++) { r -= w[i]; if (r <= 0) return arr[i]; }
+    return arr[arr.length - 1];
+  };
+  const ease = (x) => { x = Math.max(0, Math.min(1, x)); return x * x * (3 - 2 * x); };
+ 
+ 
+  const heartF = (x, y) => Math.pow(x * x + y * y - 1, 3) - x * x * y * y * y;
+  function heartRuns(ny) {
+    const runs = []; let start = null;
+    for (let x = -1.3; x <= 1.3; x += 0.002) {
+      const inside = heartF(x, ny) <= 0;
+      if (inside && start === null) start = x;
+      else if (!inside && start !== null) { runs.push([start, x]); start = null; }
+    }
+    if (start !== null) runs.push([start, 1.3]);
+    return runs;
+  }
+ 
+  const wordFont = (fs) => `700 ${fs}px ${SANS}`;
+  function measure(text, fs) { lctx.font = wordFont(fs); return lctx.measureText(text).width; }
+ 
+  function fitRow(xl, xr, fs) {
+    const avail = xr - xl, minGap = fs * 1.6;
+    let best = null;
+    for (let attempt = 0; attempt < 14; attempt++) {
+      const items = []; let sum = 0;
+      for (;;) {
+        const t = pick(PHRASES, [4, 4, 2, 3, 2]), w = measure(t, fs);
+        const n = items.length + 1;
+        if (sum + w + (n - 1) * minGap > avail) break;
+        items.push({ t, w }); sum += w;
+      }
+      if (!items.length) continue;
+      const left = avail - sum - (items.length - 1) * minGap;
+      if (!best || left < best.left) best = { items, sum, left };
+      if (left < fs * 0.6) break;
+    }
+    if (!best) return [];
+    const n = best.items.length;
+    const gap = n > 1 ? (avail - best.sum) / (n - 1) : 0;
+    let x = n > 1 ? xl : xl + (avail - best.sum) / 2;
+    return best.items.map((it, i) => {
+      const o = { t: it.t, x: x + it.w / 2, edge: i === 0 || i === n - 1 };
+      x += it.w + gap;
+      return o;
+    });
+  }
+ 
+  function layout() {
+    const S = VS * 0.35, cx = VS / 2, cy = VS / 2;
+    const top = cy - (1.30 - 0.11) * S, bottom = cy + (1.0 + 0.11) * S;
+    const words = [];
+    let row = 0;
+    for (let y = top + ROW_H / 2; y < bottom; y += ROW_H, row++) {
+      const fs = row % 3 === 1 ? 15 : 14;
+      const ny = -(y - cy) / S + 0.11;
+      const rise = 1 - (y - top) / (bottom - top);
+      for (const [a, b] of heartRuns(ny)) {
+        const xl = cx + a * S + fs * 1.0, xr = cx + b * S - fs * 1.0;
+        if (xr - xl < measure("love you", fs) * 0.9) continue;
+        for (const it of fitRow(xl, xr, fs)) {
+          words.push({
+            text: it.t, x: it.x, y, fs,
+            tone: pick([0, 1, 2, 3], TONE_W),
+            base: it.edge ? 1 : rnd(0.55, 0.85),
+           
+            delay: (it.edge
+              ? (it.x < cx ? rise * 0.5 : 0.5 + rise * 0.5) * (BUILD_TIME - 90) + rnd(0, 25)
+              : rnd(0.2, 1) * (BUILD_TIME - 60)),
+            alpha: 0,
+            phase: rnd(0, Math.PI * 2),
+            ang: Math.atan2(y - cy, it.x - cx) + rnd(-0.4, 0.4),
+            spd: rnd(5, 10) * (0.55 + Math.hypot(it.x - cx, y - cy) / 330),
+            rot: rnd(-0.04, 0.04)
+          });
+        }
+      }
+    }
+    return words;
+  }
+ 
+ 
+  let W = 0, H = 0, dpr = 1, unit = 1;
+  function resize() {
+    dpr = Math.min(window.devicePixelRatio || 1, 2.5);
+    W = Math.max(1, Math.round(innerWidth * dpr)); H = Math.max(1, Math.round(innerHeight * dpr));
+    for (const c of [cv, lay, cap, gl]) { c.width = W; c.height = H; }
+    s1.width = Math.max(1, W >> 2); s1.height = Math.max(1, H >> 2);
+    s2.width = Math.max(1, W >> 3); s2.height = Math.max(1, H >> 3);
+    unit = Math.min(W, H) / VS;
+  }
+  function blurInto(src) {
+    s1c.imageSmoothingQuality = s2c.imageSmoothingQuality = gctx.imageSmoothingQuality = "high";
+    s1c.drawImage(src, 0, 0, s1.width, s1.height);
+    s2c.drawImage(s1, 0, 0, s2.width, s2.height);
+    gctx.drawImage(s2, 0, 0, W, H);
+  }
+ 
+ 
+  let words = [], t0 = 0, lastF = 0, raf = 0, sparks = [], sparked = false;
+ 
+  function spawnSparks() {
+    sparked = true;
+    for (let i = 0; i < 320; i++) {
+      const w = words[Math.floor(Math.random() * words.length)];
+      const px = VS / 2 + (w.x - VS / 2) * ZOOM_MAX, py = VS / 2 + (w.y - VS / 2) * ZOOM_MAX;
+      const ang = Math.atan2(py - VS / 2, px - VS / 2) + rnd(-0.6, 0.6), v = rnd(2, 11);
+      sparks.push({ x: px, y: py, vx: Math.cos(ang) * v, vy: Math.sin(ang) * v,
+        life: rnd(50, 130), max: 130, r: rnd(1.2, 3.4),
+        c: pick(["255,200,215", "255,120,160", "255,70,110", "255,255,255"], [3, 4, 3, 1]) });
+    }
+  }
+ 
+  // Сердце-обводка вокруг надписи: растёт от нижнего острия вверх с двух сторон
+  function drawOutline(frame, m, cxp, cyp) {
+    if (frame < OUTLINE_START) return;
+    const p = ease((frame - OUTLINE_START) / (OUTLINE_END - OUTLINE_START));
+    const k = Math.min(W, H) * 0.95 / 32;
+    const cy0 = cyp - 2.5 * k;
+    const pt = (t) => [
+      cxp + 16 * Math.pow(Math.sin(t), 3) * k,
+      cy0 - (13 * Math.cos(t) - 5 * Math.cos(2 * t) - 2 * Math.cos(3 * t) - Math.cos(4 * t)) * k
+    ];
+    const pulse = p < 1 ? 1 : 0.8 + 0.2 * Math.sin(frame * 0.05);
+    ctx.save();
+    ctx.globalCompositeOperation = "source-over";
+    ctx.globalAlpha = pulse;
+    ctx.strokeStyle = "rgb(255,120,160)";
+    ctx.lineWidth = Math.max(2, 3.2 * m); ctx.lineCap = "round"; ctx.lineJoin = "round";
+    ctx.shadowColor = "rgba(255,70,120,0.95)"; ctx.shadowBlur = 22 * m;
+    for (const dir of [1, -1]) {
+      ctx.beginPath();
+      const steps = 160, end = Math.max(1, Math.round(steps * p));
+      for (let i = 0; i <= end; i++) {
+        const t = Math.PI - dir * Math.PI * (i / steps);
+        const [x, y] = pt(t);
+        i ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
+      }
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+ 
+  function draw(frame, dt) {
+    const m = unit, cxp = W / 2, cyp = H / 2;
+    const zt = ease((frame - ZOOM_START) / (ZOOM_END - ZOOM_START));
+    const z = 1 + (ZOOM_MAX - 1) * zt;
+    const beat = 1 + 0.018 * Math.pow(Math.max(0, Math.sin(frame * 0.08)), 3) * (1 - zt);
+    const zz = z * beat, dim = 1 - 0.35 * zt;
+ 
+    lctx.globalCompositeOperation = "source-over";
+    lctx.globalAlpha = 1; lctx.fillStyle = "#000"; lctx.fillRect(0, 0, W, H);
+    lctx.textAlign = "center"; lctx.textBaseline = "middle";
+ 
+    const e = frame - EXPLODE;
+    if (e > 0 && !sparks.length && !sparked) spawnSparks();
+ 
+    for (const w of words) {
+      if (frame > w.delay && w.alpha < 1) w.alpha = Math.min(1, w.alpha + (0.05 + Math.random() * 0.03) * dt);
+      if (w.alpha <= 0) continue;
+      const done = w.alpha >= 1;
+      const flick = done ? 0.72 + 0.28 * Math.sin(frame * 0.04 + w.phase * 3) : 0.85 + 0.15 * Math.random();
+      let a = w.alpha * w.base * flick * dim;
+      let vx = (w.x - VS / 2) * zz, vy = (w.y - VS / 2) * zz, rot = 0, sc = 1;
+      if (e > 0) {
+        if (e > FADE) continue;
+        const d = w.spd * (1 - Math.exp(-e * 0.03)) / 0.03;
+        vx += Math.cos(w.ang) * d;
+        vy += Math.sin(w.ang) * d + 0.006 * e * e;
+        rot = w.rot * e;
+        sc = 1 + e * 0.004;
+        a = Math.min(1, a * (1 + 1.6 * Math.exp(-e * 0.07))) * Math.pow(Math.max(0, 1 - e / FADE), 1.3);
+      }
+      const fs = Math.max(8, Math.round(w.fs * m * zz * sc));
+      const x = cxp + vx * m + Math.sin(frame * 0.02 + w.phase) * 1.5 * m;
+      const y = cyp + vy * m + Math.cos(frame * 0.017 + w.phase) * 1.5 * m;
+ 
+      lctx.save();
+      lctx.translate(x, y); if (rot) lctx.rotate(rot);
+      lctx.font = wordFont(fs);
+      const sw = lctx.measureText(w.text).width;
+      
+      const gs = Math.round(fs * 1.35);
+      lctx.font = `500 ${gs}px ${SANS}`;
+      lctx.fillStyle = `rgba(${GHOST},${a * 0.38})`;
+      lctx.fillText(w.text[0], -(sw / 2 + fs * 0.6), 0);
+      lctx.fillText(w.text[w.text.length - 1], sw / 2 + fs * 0.6, 0);
+      lctx.font = wordFont(fs);
+      lctx.fillStyle = `rgba(${TONES[w.tone]},${a})`;
+      lctx.fillText(w.text, 0, 0);
+      lctx.restore();
+    }
+ 
+    if (e > 0) {
+     
+     
+    }
+ 
+    ctx.globalCompositeOperation = "source-over"; ctx.globalAlpha = 1;
+    ctx.fillStyle = BG; ctx.fillRect(0, 0, W, H);
+    blurInto(lay);
+    ctx.globalCompositeOperation = "lighter";
+    ctx.globalAlpha = GLOW; ctx.drawImage(gl, 0, 0); ctx.drawImage(gl, 0, 0);
+    ctx.globalAlpha = 1; ctx.drawImage(lay, 0, 0);
+    ctx.globalCompositeOperation = "source-over";
+ 
+    if (frame > CAPTION_START) {
+      const t = ease((frame - CAPTION_START) / (CAPTION_END - CAPTION_START));
+      const bd = t * (1 - ease((frame - EXPLODE - 160) / 90));        // подложка уходит после взрыва
+      const R = Math.min(W, H) * 0.5;
+      const g = ctx.createRadialGradient(cxp, cyp, 0, cxp, cyp, R);
+      g.addColorStop(0, `rgba(11,3,6,${0.93 * bd})`);
+      g.addColorStop(0.55, `rgba(11,3,6,${0.6 * bd})`);
+      g.addColorStop(1, "rgba(11,3,6,0)");
+      ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+ 
+      let fs = Math.round(VS * 0.115 * m);
+      cctx.font = `400 ${fs}px ${SERIF}`;
+      const widest = Math.max(...CAPTION.map(s => cctx.measureText(s).width));
+      const maxW = Math.min(Math.min(W, H) * 0.62, W * 0.9);
+      if (widest > maxW) fs = Math.floor(fs * maxW / widest);
+      const lineH = fs * 1.2, lift = Math.min(W, H) * 0.1;      // надпись чуть выше центра: там сердце шире
+      const ys = [cyp - lineH * 0.55 - lift, cyp + lineH * 0.55 - lift];
+      cctx.fillStyle = "#000"; cctx.fillRect(0, 0, W, H);
+      cctx.font = `400 ${fs}px ${SERIF}`; cctx.textAlign = "center"; cctx.textBaseline = "middle";
+      cctx.fillStyle = "rgb(255,110,150)";
+      CAPTION.forEach((s, i) => cctx.fillText(s, cxp, ys[i]));
+      blurInto(cap);
+      ctx.globalCompositeOperation = "lighter";
+      ctx.globalAlpha = (0.8 + 0.12 * Math.sin(frame * 0.05)) * t; ctx.drawImage(gl, 0, 0);
+      ctx.globalCompositeOperation = "source-over";
+      ctx.globalAlpha = t; ctx.fillStyle = "#fff4f7";
+      ctx.font = `400 ${fs}px ${SERIF}`; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+      CAPTION.forEach((s, i) => ctx.fillText(s, cxp, ys[i]));
+      ctx.globalAlpha = 1;
+    }
+    drawOutline(frame, m, cxp, cyp);
+  }
+ 
+  function loop(now) {
+    const f = (now - t0) * 0.06;
+    const dt = Math.max(0, Math.min(4, f - lastF)); lastF = f;
+    draw(f, dt);
+    raf = requestAnimationFrame(loop);
+  }
+  function start() {
+    cancelAnimationFrame(raf);
+    resize(); words = layout(); sparks = []; sparked = false;
+    t0 = performance.now(); lastF = 0;
+    if (reduce) { words.forEach(w => w.alpha = 1); draw(EXPLODE + FADE + 60, 1); }
+    else raf = requestAnimationFrame(loop);
+  }
+ 
+  addEventListener("resize", () => { resize(); if (reduce) draw(EXPLODE + FADE + 60, 1); });
+  document.getElementById("again").addEventListener("click", start);
+  addEventListener("keydown", (e) => { if ("rRкК".includes(e.key)) start(); });
+  window.__jump = (f) => { t0 -= f / 0.06; };          // для отладки
+ 
+  const fontsReady = document.fonts && document.fonts.load
+    ? Promise.race([
+        Promise.all([
+          document.fonts.load('700 14px "Montserrat"', "I love you LOVE YOU"),
+          document.fonts.load('400 60px "Marck Script"', "Ксюша, я люблю тебя")
+        ]),
+        new Promise(r => setTimeout(r, 2000))
+      ])
+    : Promise.resolve();
+  fontsReady.catch(() => {}).then(start);
+})();
+</script>
+</body>
+</html>
+ 
